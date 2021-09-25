@@ -9,12 +9,22 @@
 #include <unistd.h> // write(), read(), close()
 //#include "hotspring.h"
 #include <curses.h>
+/*
+Compile 
 
+cd ~/Dokumente/Sync/Dokumente_sync_sven/Programmierung/Whirlpool/hotspring-hawk
+gcc hawk_curses.c -o hawk_curses -lcurses
+./hawk_curses
+
+debug bei 428
+
+*/
 
 // Curses
 
 char c;
 WINDOW *my_win_display;
+WINDOW *my_win_keyboard;
 WINDOW *my_win_config;
 WINDOW *my_win_log;
 int startx, starty, width, height, logrow=1, max_logrow=25, max_logcol=160;
@@ -28,6 +38,7 @@ void print_config(WINDOW *local_win);
 void init_ncurses();
 void end_ncurses();
 void set_config(char key);
+void print_keyboard(WINDOW *local_win, char key);
 
     //
 char daten[200]; // zwichenspeichern des Buffers
@@ -42,9 +53,11 @@ unsigned int last_mb_crc = 0;
 unsigned char last_display[16] = {"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"};
 int datasize;
 int opt = 0;
+int keyid = 6; // None Key
+char last_c=1;
 /* ARGV DEFAULTS */
-char serial_path1[30] = "/dev/ttyUSB0";
-char serial_path2[30] = "/dev/ttyUSB1";
+char serial_path2[30] = "/dev/ttyUSB0";
+char serial_path1[30] = "/dev/ttyUSB1";
 int lock_set_key = 0; // Send the Set Key to Mainboard 0=NO 1=YES
 int supress_dup = 1;  // supress duplicate Output 0=NO 1=YES
 int supress_log = 0;  // supress Logging Output 0=NO 1=YES
@@ -57,15 +70,16 @@ int const_count = 11; // Count Data
 // crc, text, payload rawdata, rawdata length
 char *const_text[][4] = {
     {"   ", " unknown  ", "", ""},
-    {"360", "KEYB UP   ", "\x58\x4d\x53\x00\x03\x6b\x00\x02\x01\x68", "10"},
-    {"366", "KEYB DOWN ", "\x58\x4d\x53\x00\x03\x6b\x00\x08\x01\x6e", "10"},
-    {"374", "KEYB JETS ", "\x58\x4d\x53\x00\x03\x6b\x00\x10\x01\x76", "10"},
-    {"362", "KEYB SET  ", "\x58\x4d\x53\x00\x03\x6b\x00\x04\x01\x6a", "10"},
-    {"134", "KEYB LIGHT", "\x58\x4d\x53\x00\x03\x6b\x00\x20\x01\x86", "10"},
-    // richtig wäre hier 390 aber die Tastatur sendet FF FF FF 86. puefen ob ein defekt vorliegt!!!
-    {"358", "KEYB NONE ", "\x58\x4d\x53\x00\x03\x6b\x00\x00\x01\x66", "10"}, // all Keyboard combinations
+    // all Keyboard combinations
+    {"360", "KEYB UP   ", "\x58\x4d\x53\x00\x03\x6b\x00\x02\x01\x68", "10"}, // Keyid=1
+    {"366", "KEYB DOWN ", "\x58\x4d\x53\x00\x03\x6b\x00\x08\x01\x6e", "10"}, // Keyid=2
+    {"374", "KEYB JETS ", "\x58\x4d\x53\x00\x03\x6b\x00\x10\x01\x76", "10"}, // Keyid=3
+    {"362", "KEYB SET  ", "\x58\x4d\x53\x00\x03\x6b\x00\x04\x01\x6a", "10"}, // Keyid=4
+    {"390", "KEYB LIGHT", "\x58\x4d\x53\x00\x03\x6b\x00\x20\x01\x86", "10"}, // Keyid=5
+    // richtig wäre hier 390 aber die Tastatur sendet FF FF FF 86. puefen ob ein defekt vorliegt!!! 134
+    {"358", "KEYB NONE ", "\x58\x4d\x53\x00\x03\x6b\x00\x00\x01\x66", "10"}, // Keyid=6
     // now all Mainbaord Payloads
-    {"358", "SET+RY ON ", "\x58\x53\x4d\x00\x03\x1a\x00\x51\x01\x66", "10"},
+    {"358", "SET+RY ON ", "\x58\x53\x4d\x00\x03\x1a\x00\x51\x01\x66", "10"}, 
     {"278", "SET+RY OFF", "\x58\x53\x4d\x00\x03\x1a\x00\x01\x01\x16", "10"},
     {"269", "   init   ", "\x58\x53\x4d\x00\x01\x14\x01\x0d", "8"},
     {"277", " RY OFF   ", "\x58\x53\x4d\x00\x03\x1a\x00\x00\x01\x15", "10"},
@@ -97,7 +111,6 @@ struct Struct_Display
     int SUN;
     int CLEAN;
 };
-
 int serial_port;
 int serial_port2;
 //Create new termios struc, we call it 'tty' for convention
@@ -120,7 +133,8 @@ void init_display();
 void set_display(int crc);
 void print_screen();
 void end_serial();
-void read_data();
+void read_data(int keyid);
+void set_keyid(char key);
 
 //********************************* M  A  I  N *********************************
 int main(int argc, char **argv[])
@@ -129,10 +143,13 @@ int main(int argc, char **argv[])
 
     init_ncurses();
     //height, width, starty, startx
-    my_win_display = create_newwin(7, 24, 1, 0);
+    my_win_keyboard = create_newwin(7, 20, 1, 0);
+    print_keyboard(my_win_keyboard, c);
+    my_win_display = create_newwin(7, 24, 1, 21);
     init_display();
     print_display(my_win_display);
-    my_win_config = create_newwin(7, 60, 1, 25);
+
+    my_win_config = create_newwin(7, 60, 1, 25+21);
     my_win_log = create_newwin(max_logrow, max_logcol, 9, 0);
     wborder(my_win_log, ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ');
     mvwprintw(my_win_log,0,0 , "");
@@ -149,28 +166,65 @@ int main(int argc, char **argv[])
     mydata.crc = 0;
 //    mvwprintw(my_win_log, 2, 1, "test");
 //    wrefresh(my_win_log);
-
     //################## Start LOOP ####################
     while (1)
     {
-        read_data();
+        read_data(keyid);
         timeout(0);
         c=getch();
         if (c=='q') {
             break;
         }
-        if (c=='d' || c=='s' || c=='f')
+        set_keyid(c);
+
+        if (c=='d' || c=='s' || c=='f'){
           set_config(c);
           print_config(my_win_config);
+        } 
+        if (c=='h' || c=='n' || c=='u' || c=='j'|| c=='m' ||keyid==6) {
+          print_keyboard(my_win_keyboard,c);
+        }
     }
     end_serial();
     end_ncurses();
     return 0; // success
 }
+   
+   
 
+   //wprintw(my_win_log, "keypad %d", tastatur);
+   //wrefresh(my_win_log);
 /* #################### *** Funktionen *** ####################### */
-
-void read_data()
+void set_keyid(char key){
+  switch (key)
+  {
+  case 'h':
+      keyid=1;
+      /* code */
+      break;
+  case 'n':
+      keyid=2;
+      /* code */
+      break;
+  case 'u':
+      keyid=3;
+      /* code */
+      break;
+  case 'j':
+      keyid=4;
+      /* code */
+      break;
+  case 'm':
+      keyid=5;
+      /* code */
+      break;                        
+  
+  default:
+      keyid=6;
+      break;
+  }
+}
+void read_data(int keyid)
 {
     //    mvwprintw(my_win_log, 2, 1, "bytes %d",num_bytes);
     //wrefresh(my_win_log);
@@ -210,17 +264,23 @@ void read_data()
             {
                 print_data(mydata, supress_dup, supress_log); // unterdruecke Duplikate 0=nein / 1=ja
                 datasize = mydata.len + 7;
-                if (serial2_aktiv == 1)
+                if (serial2_aktiv == 1 & mydata.device[1] == 'M') // MITM is aktiv
                 {
-                    if (lock_set_key == 1 & mydata.device[1] == 'M' & mydata.crc == 362)
+                    if (lock_set_key == 1  & mydata.crc == 362) // Set Key suppress enabled and Device is Keyboard.
                     {
-                        wprintw(my_win_log,"KEY SET DROP!!!!\n");
+                        wprintw(my_win_log,"KEY SET DROP!!!! \n" );
                         //logrow = logrow % max_logrow;
                         //mvprintw(my_win_log,++logrow,1,"");
                         wrefresh(my_win_log);
                         write(serial_port2, const_text[6][2], 10);
                     }
-                    else
+                    else if (mydata.device[1] == 'M' & keyid < 6) {
+                        write(serial_port2, const_text[keyid][2], 10);
+                        if (keyid != 6){
+                            wprintw(my_win_log,"Key override id %d\n",keyid);    
+                        }
+                    }
+                    else // sonst alles senden
                     {
                         write(serial_port2, mydata.data, datasize);
                     }
@@ -373,6 +433,7 @@ struct Struct_Data find_payload(char *text, int buflen)
     {
         int num1;
         int num2;
+        char test;
         //printf("datenpos : %d ", datenpos);
         int rest = buflen - datenpos;
         if ((text[i] == 'X' & text[i + 1] == 'M' & text[i + 2] == 'S') | (text[i] == 'X' & text[i + 1] == 'S' & text[i + 2] == 'M'))
@@ -388,7 +449,11 @@ struct Struct_Data find_payload(char *text, int buflen)
             memcpy(md.device, text + i, 3);
             md.len = (text[i + 3] * 256) + text[i + 4];
             memcpy(md.payload, text + i + 5, md.len);
-            md.crc = (text[i + 4 + md.len + 1] * 256) + text[i + 4 + md.len + 2];
+            if(text[i + 4 + md.len + 2] > 0)
+              md.crc = (text[i + 4 + md.len + 1] * 256) + text[i + 4 + md.len + 2];
+            else
+              md.crc = (text[i + 4 + md.len + 1] * 256) + (text[i + 4 + md.len + 2]+256);
+
             md.pos = i + 4 + md.len + 3;
             datenpos = i + 4 + md.len + 3; // merken der wo wir stehen
             memcpy(md.data, text + i, md.len + 7);
@@ -397,17 +462,7 @@ struct Struct_Data find_payload(char *text, int buflen)
                 memcpy(last_display, text + i + 5, md.len);
                 memcpy(mydisplay.TEXT, text + i + 5, md.len);
             }
-            // printf("daten %s", md.device);
-            // printf("laenge %d ", md.len);
-            // printf("crc %d crc1 %02x crc2 %02x\n ", md.crc, text[i + 4 + md.len + 1], text[i + 4 + md.len + 2]);
-            // printf("RAW DATA->");
-            // for ( int x = 0 ; x < (3 + 2 + ((text[i + 3] * 256) + text[i + 4]) + 2),x++ ){
-            // for ( int x = i ; x < 10;x++ ) {
-            // printf("%02X ",text[x]);
-            // }
-            //strcpy(tmpchar,text[wert]);
-            //tmpchar = {text[i]};
-            // printf("\n");
+
             return md;
         }
         //printf("%02X ", text[i]);
@@ -546,7 +601,7 @@ void init_ncurses()
     init_pair(1, COLOR_WHITE, COLOR_BLACK);
     init_pair(2, COLOR_RED, COLOR_BLACK);
 
-    mvprintw(0, 0, " *** Pool Display ***      Config");
+    mvprintw(0, 0, "  *** Keyboard ***     *** Pool Display ***      Config");
     mvprintw(8, 0, " LOG");
     height = 3;
     width = 10;
@@ -662,7 +717,7 @@ void set_display(int crc){
 
     switch (crc)
     {
-    case 358:
+    case 358: 
         mydisplay.SET = 1;
         mydisplay.READY = 1;
         break;
@@ -721,4 +776,45 @@ void set_reverse(WINDOW *local_win, int display_item)
     {
         wattron(local_win, COLOR_PAIR(2));
     }
+}
+void print_keyboard(WINDOW *local_win, char key)
+{
+   if (last_c == key)
+     return;
+   last_c=key;  
+   if (key == 'h') {
+     set_reverse(local_win,1);
+   }
+   else   
+     set_reverse(local_win,0);
+   mvwprintw(local_win, 2, 2, " UP(H)"); //1-360
+
+   if (key == 'n'){ 
+     set_reverse(local_win,1);
+   }  
+   else   
+     set_reverse(local_win,0);   
+   mvwprintw(local_win, 4, 2, "DOWN(N)"); //2-366
+
+   if (key == 'u') {
+     set_reverse(local_win,1);
+   }  
+   else   
+     set_reverse(local_win,0);
+   mvwprintw(local_win, 2, 10, "JETS(U)"); //3-374
+   if (key == 'j') {
+     set_reverse(local_win,1);
+   }       
+   else   
+     set_reverse(local_win,0);
+   mvwprintw(local_win, 3, 10, "SET(J)"); //4-362
+
+   if (key == 'm') {
+     set_reverse(local_win,1);
+   }       
+   else      
+     set_reverse(local_win,0);
+   mvwprintw(local_win, 4, 10, "LIGHT(M)"); //5-390
+
+   wrefresh(local_win);
 }
